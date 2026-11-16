@@ -1,0 +1,5 @@
+{
+  "name": "Liberty3D.ProductViewer",
+  "references": ["Unity.InputSystem", "Unity.ugui", "Unity.Localization", "Unity.Addressables", "Unity.ResourceManager"],
+  "autoReferenced": true
+}

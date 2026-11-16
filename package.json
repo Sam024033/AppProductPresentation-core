@@ -1,0 +1,13 @@
+{
+  "name": "com.liberty3d.productviewer",
+  "version": "0.1.0",
+  "displayName": "Liberty 3D · Product Viewer",
+  "description": "Reusable offline-first product presentation core and authoring tools.",
+  "unity": "6000.3",
+  "author": { "name": "Liberty 3D" },
+  "dependencies": {
+    "com.unity.inputsystem": "1.19.0",
+    "com.unity.ugui": "2.0.0",
+    "com.unity.localization": "1.5.9"
+  }
+}
