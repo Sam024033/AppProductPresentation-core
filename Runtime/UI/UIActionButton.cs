@@ -15,6 +15,10 @@ namespace Liberty3D.ProductViewer
         public void Bind(string text, UnityAction action)
         {
             label.text = text;
+            BindAction(action);
+        }
+        public void BindAction(UnityAction action)
+        {
             if (boundAction != null) button.onClick.RemoveListener(boundAction);
             boundAction = action;
             if (action != null) button.onClick.AddListener(action);

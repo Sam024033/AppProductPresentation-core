@@ -80,6 +80,12 @@ namespace Liberty3D.ProductViewer
             pivot = new GameObject("Product orbit").transform;
             if (!catalog.uiPrefab) { Debug.LogError("Assign an editable ViewerUI prefab to the catalog. Tools > Liberty 3D > UI > Create editable prefabs."); enabled = false; yield break; }
             ui = Instantiate(catalog.uiPrefab); ui.name = "Viewer Canvas";
+#if UNITY_ANDROID && !UNITY_EDITOR
+            ConfigureInputHints(ui.product.transform, true);
+#else
+            ConfigureInputHints(ui.product.transform, false);
+#endif
+            ui.product.gameObject.AddComponent<PortraitNavigationLayout>();
             // Some editable root canvas prefabs were saved with an all-zero scale.
             // Reset only this invalid scale; keep intentional nonzero canvas settings.
             if (ui.transform.localScale.sqrMagnitude < .000001f) ui.transform.localScale = Vector3.one;
@@ -102,6 +108,15 @@ namespace Liberty3D.ProductViewer
             ViewerLanguage.Set(PlayerPrefs.GetInt("Liberty3D.Language", 0) == 1);
             ViewerLanguage.Changed += QueueRefresh;
             RefreshUI();
+        }
+
+        public static void ConfigureInputHints(Transform productRoot, bool touch)
+        {
+            if (!productRoot) return;
+            var mouse = productRoot.Find("Souris");
+            var gestures = productRoot.Find("Gestures");
+            if (mouse) mouse.gameObject.SetActive(!touch);
+            if (gestures) gestures.gameObject.SetActive(touch);
         }
 
         void OnDestroy()
@@ -359,14 +374,14 @@ namespace Liberty3D.ProductViewer
 
         void RefreshUI()
         {
-            if (!canvas || !ui) return;
+            if (!canvas || !ui || languageChangePending) return;
             bool resized = lastWidth != Screen.width || lastHeight != Screen.height || lastSafe != Screen.safeArea;
             lastWidth = Screen.width; lastHeight = Screen.height; lastSafe = Screen.safeArea;
             ui.ApplySafeArea(); Canvas.ForceUpdateCanvases();
             width = safeRoot.rect.width; height = safeRoot.rect.height;
             ui.manufacturer.text = catalog.manufacturer;
             ui.logo.gameObject.SetActive(catalog.logo != null); if (catalog.logo) ui.logo.sprite = catalog.logo;
-            ui.language.Bind(ViewerLanguage.English ? "EN / FR" : "FR / EN", () => ViewerLanguage.Set(!ViewerLanguage.English));
+            ui.language.Bind(ViewerLanguage.English ? "EN / FR" : "FR / EN", RequestLanguageChange);
             ui.welcome.gameObject.SetActive(State == ViewerState.Welcome);
             ui.catalog.gameObject.SetActive(State == ViewerState.Catalog);
             ui.product.gameObject.SetActive(State >= ViewerState.Assembled);
@@ -379,10 +394,59 @@ namespace Liberty3D.ProductViewer
             if (resized) ui.product.informationPanel.ResetLayoutOrigin();
             if (rig) fitDistance = FitDistance(overallRadius);
         }
+        bool languageChangePending;
+        void RequestLanguageChange()
+        {
+            if (!languageChangePending) StartCoroutine(PrepareLanguageChange(!ViewerLanguage.English));
+        }
+
+        System.Collections.Generic.IEnumerable<ProductText> AllLocalizedTexts()
+        {
+            if (!catalog) yield break;
+            yield return catalog.welcome; yield return catalog.legal;
+            if (catalog.products == null) yield break;
+            foreach (var item in catalog.products)
+            {
+                if (!item) continue;
+                if (item.information != null) { yield return item.information.title; yield return item.information.description; }
+                if (item.guidedSteps != null) foreach (var step in item.guidedSteps)
+                    if (step != null) { yield return step.title; yield return step.description; }
+                if (item.prefab) foreach (var part in item.prefab.GetComponentsInChildren<ProductPart>(true))
+                    if (part && part.information != null) { yield return part.information.title; yield return part.information.description; }
+            }
+        }
+
+        IEnumerator PrepareLanguageChange(bool english)
+        {
+            languageChangePending = true;
+            if (ui && ui.language && ui.language.button) ui.language.button.interactable = false;
+            var locale = LocalizationSettings.AvailableLocales.GetLocale(english ? "en" : "fr");
+            if (locale != null)
+            {
+                // Unity releases cached tables on a locale change: select first, then load.
+                // Keep the existing UI until every needed table is ready.
+                LocalizationSettings.SelectedLocale = locale;
+                var seen = new HashSet<UnityEngine.Localization.Tables.TableReference>();
+                foreach (var item in AllLocalizedTexts())
+                {
+                    if (item == null || item.localized == null || item.localized.IsEmpty) continue;
+                    var table = item.localized.TableReference;
+                    if (!seen.Add(table)) continue;
+                    var load = LocalizationSettings.StringDatabase.GetTableAsync(table, locale);
+                    if (!load.IsDone) yield return load;
+                }
+            }
+            ViewerLanguage.Set(english);
+            if (ui && ui.language && ui.language.button) ui.language.button.interactable = true;
+            languageChangePending = false;
+            refreshQueued = false;
+            RefreshUI();
+        }
+
         void WelcomeUI()
         {
             ui.welcome.heading.text = catalog.welcome.Value;
-            ui.welcome.explore.Bind(T("Toucher pour explorer", "Touch to explore"), () => { State = ViewerState.Catalog; RefreshUI(); });
+            ui.welcome.explore.BindAction(() => { State = ViewerState.Catalog; RefreshUI(); });
         }
         void CatalogUI()
         {
@@ -610,6 +674,45 @@ namespace Liberty3D.ProductViewer
             Bind(view.close, T("Quitter", "Exit"), () => { guideIndex = -1; RefreshUI(); });
             view.previous.gameObject.SetActive(guideIndex > 0); view.next.gameObject.SetActive(guideIndex < product.guidedSteps.Length - 1);
             Bind(view.previous, "←", () => StartGuide(guideIndex - 1)); Bind(view.next, "→", () => StartGuide(guideIndex + 1));
+        }
+    }
+}
+
+namespace Liberty3D.ProductViewer
+{
+    public sealed class PortraitNavigationLayout : UnityEngine.MonoBehaviour
+    {
+        UnityEngine.GameObject wide, portrait, wideBackground, portraitBackground;
+        UIActionButton[] wideActions, portraitActions;
+        bool initialized;
+        void LateUpdate() => ApplyForDimensions(UnityEngine.Device.Screen.width, UnityEngine.Device.Screen.height);
+        public void ApplyForDimensions(int screenWidth, int screenHeight)
+        {
+            if (!initialized) {
+                var w = transform.Find("Navigation"); var p = transform.Find("NavigationPortrait");
+                var wb = transform.Find("BackgroundNavigation"); var pb = transform.Find("BackgroundNavigationPortrait");
+                if (!w || !p || !wb || !pb) return;
+                wide=w.gameObject; portrait=p.gameObject; wideBackground=wb.gameObject; portraitBackground=pb.gameObject;
+                wideActions=wide.GetComponentsInChildren<UIActionButton>(true);
+                portraitActions=portrait.GetComponentsInChildren<UIActionButton>(true);
+                if (wideActions.Length != portraitActions.Length) { UnityEngine.Debug.LogError("Portrait navigation: number of actions differs from landscape menu.", this); enabled=false; return; }
+                for (int i=0; i<wideActions.Length; i++) {
+                    var original=wideActions[i]; var copy=portraitActions[i];
+                    if (copy.button && original.button) copy.button.onClick.AddListener(() => original.button.onClick.Invoke());
+                }
+                initialized=true;
+            }
+            bool isPortrait=screenHeight > screenWidth;
+            wide.SetActive(!isPortrait); portrait.SetActive(isPortrait);
+            wideBackground.SetActive(!isPortrait); portraitBackground.SetActive(isPortrait);
+            if (!isPortrait) return;
+            for (int i=0; i<wideActions.Length; i++) {
+                var source=wideActions[i]; var target=portraitActions[i];
+                if (target.gameObject.activeSelf != source.gameObject.activeSelf) target.gameObject.SetActive(source.gameObject.activeSelf);
+                if (target.label && source.label && target.label.text != source.label.text) target.label.text=source.label.text;
+                if (target.icon && source.icon && target.icon.sprite != source.icon.sprite) target.icon.sprite=source.icon.sprite;
+                if (target.button && source.button) target.button.interactable=source.button.interactable;
+            }
         }
     }
 }
